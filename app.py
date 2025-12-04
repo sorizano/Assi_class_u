@@ -1,133 +1,101 @@
+import streamlit as st
 import pandas as pd
-import numpy as np
+import logic
 
-class DataLoader:
-    """Clase encargada de la carga y limpieza inicial de datos."""
+st.set_page_config(page_title="Gestor de Horarios", layout="wide", page_icon="📅")
+
+st.title("📅 Sistema Modular de Programación de Horarios")
+
+# --- SIDEBAR: Carga de Archivos ---
+with st.sidebar:
+    st.header("1. Carga de Datos")
+    st.markdown("Sube los archivos necesarios para construir el modelo.")
     
-    @staticmethod
-    def clean_col_names(df):
-        if df is not None:
-            df.columns = df.columns.str.strip()
-        return df
+    files = {}
+    files['oferta'] = st.file_uploader("Oferta Académica", type=['xlsx', 'csv'])
+    files['requerimientos'] = st.file_uploader("Requerimientos", type=['xlsx', 'csv'])
+    files['aulas'] = st.file_uploader("Aulas / Infraestructura", type=['xlsx', 'csv'])
+    files['disponibilidad'] = st.file_uploader("Disponibilidad Docente", type=['xlsx', 'csv'])
+    files['malla'] = st.file_uploader("Malla Curricular", type=['xlsx', 'csv'])
 
-    @staticmethod
-    def load_file(uploaded_file):
-        if uploaded_file is None: return None
-        try:
-            if uploaded_file.name.endswith('.xlsx'):
-                df = pd.read_excel(uploaded_file)
-            else:
-                # Lógica para CSV con distintos encodings
-                try: df = pd.read_csv(uploaded_file)
-                except: 
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file, encoding='latin-1', sep=';')
-            return DataLoader.clean_col_names(df)
-        except Exception as e:
-            return pd.DataFrame() # Retorna vacío en error para no romper
+# --- PROCESAMIENTO INICIAL ---
+data_context = {}
+loaded = False
 
-    @staticmethod
-    def get_summary(df, name):
-        if df is None or df.empty: return {"Error": "No cargado o vacío"}
-        return {
-            "Nombre": name,
-            "Filas": df.shape[0],
-            "Cols_Preview": list(df.columns[:4]),
-            "Nulos": df.isnull().sum().sum()
-        }
+if all(files.values()):
+    with st.spinner('Procesando archivos base...'):
+        for name, file in files.items():
+            data_context[name] = logic.DataLoader.load_file(file)
+    loaded = True
+    st.success("Archivos cargados correctamente en memoria.")
 
-def procesar_oferta(df_oferta):
-    """
-    1. Limpia tipos de datos numéricos.
-    2. Calcula HORAS_TOTALES según el 'Tipo De Sección'.
-    """
-    # Evitar modificar el original directamente
-    df = df_oferta.copy()
-    
-    # 1. Asegurar que Ht y Hp sean números (convertir errores a 0)
-    cols_num = ['Ht', 'Hp']
-    for col in cols_num:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        else:
-            df[col] = 0
+# --- INTERFAZ PRINCIPAL (TABS) ---
+tab1, tab2 = st.tabs(["📂 Explorador de Archivos", "🧠 Lógica de Cruces (Malla)"])
 
-    # 2. Lógica de Negocio: Cálculo de Horas
-    def aplicar_regla_horas(row):
-        tipo = str(row.get('Tipo De Sección', '')).strip().upper()
-        ht = row['Ht']
-        hp = row['Hp']
+with tab1:
+    if not loaded:
+        st.info("Sube todos los archivos en el menú lateral para ver el resumen.")
+    else:
+        st.subheader("Resumen de Datos Cargados")
+        col1, col2 = st.columns(2)
         
-        if 'NORMAL' in tipo:
-            return ht + hp
-        elif 'TEORÍA' in tipo or 'TEORIA' in tipo:
-            return ht
-        elif 'PRÁCTICA' in tipo or 'PRACTICA' in tipo:
-            return hp
-        else:
-            # Si está vacío o es otro tipo, por defecto sumamos (o puedes poner 0)
-            return ht + hp
-
-    df['HORAS_TOTALES'] = df.apply(aplicar_regla_horas, axis=1)
-    
-    # Creamos un ID único temporal para trackear el curso en el sistema
-    # (Usamos código + sección si existe, sino solo código para referencia)
-    if 'Codigo De Curso' in df.columns:
-         df['key_curso'] = df['Codigo De Curso'].astype(str).str.strip().str.upper()
-    
-    return df
-
-def detectar_restricciones_malla(df_oferta, df_malla):
-    """
-    Cruza la oferta (ya procesada con horas) con la malla para ver restricciones.
-    """
-    # Procesamos primero la oferta para tener las horas listas
-    df_oferta_proc = procesar_oferta(df_oferta)
-    
-    # Preparar malla
-    df_malla['key_curso'] = df_malla['COD ASIGNATURA'].astype(str).str.strip().str.upper()
-    
-    # --- Lógica de Agrupación de Malla (La que hicimos antes) ---
-    malla_relevant = df_malla[['key_curso', 'PROGRAMA', 'CICLO', 'TIPO 4']].drop_duplicates()
-    impacto_curso = {}
-    
-    for curso, grupo in malla_relevant.groupby('key_curso'):
-        tipo_curso = grupo['TIPO 4'].iloc[0]
-        lista_afectados = grupo[['PROGRAMA', 'CICLO']].to_dict('records')
-        
-        impacto_curso[curso] = {
-            'Tipo_Malla': tipo_curso,
-            'Afecta_A': lista_afectados,
-            'Es_General': 'GENERAL' in str(tipo_curso).upper()
-        }
-    
-    # --- Cruzar con Oferta ---
-    resultados = []
-    for idx, row in df_oferta_proc.iterrows():
-        cod = row.get('key_curso', 'S/C')
-        # Datos visuales
-        info_base = {
-            'Codigo': cod,
-            'Curso': row.get('Nombre De Curso', ''),
-            'Seccion': row.get('Sección Aperturado O Bloqueado', ''), # Útil para identificar
-            'Ht': row['Ht'],
-            'Hp': row['Hp'],
-            'Tipo_Seccion': row.get('Tipo De Sección', ''),
-            'Horas_Totales': row['HORAS_TOTALES'] # <--- DATO CLAVE NUEVO
-        }
-        
-        # Buscar en diccionario de malla
-        info_malla = impacto_curso.get(cod)
-        
-        if info_malla:
-            info_base['Tipo_Detectado'] = 'GENERAL' if info_malla['Es_General'] else 'ESPECIALIDAD'
-            info_base['Restricciones'] = info_malla['Afecta_A']
-            info_base['Info_Malla'] = f"{len(info_malla['Afecta_A'])} carreras" if info_malla['Es_General'] else f"Ciclo {info_malla['Afecta_A'][0]['CICLO']}"
-        else:
-            info_base['Tipo_Detectado'] = 'NO ENCONTRADO'
-            info_base['Restricciones'] = []
-            info_base['Info_Malla'] = '-'
+        # Iteramos para mostrar tarjetas bonitas como pediste
+        for idx, (name, df) in enumerate(data_context.items()):
+            summary = logic.DataLoader.get_summary(df, name.upper())
             
-        resultados.append(info_base)
-        
-    return pd.DataFrame(resultados)
+            # Distribuimos en dos columnas
+            target_col = col1 if idx % 2 == 0 else col2
+            
+            with target_col:
+                with st.expander(f"📄 {name.upper()} ({summary.get('Filas',0)} filas)", expanded=False):
+                    if "Error" in summary:
+                        st.error(summary["Error"])
+                    else:
+                        st.dataframe(df.head(3), use_container_width=True)
+                        st.caption(f"Columnas detectadas: {summary['Cols_Preview']}...")
+                        if summary['Nulos'] > 0:
+                            st.warning(f"⚠️ {summary['Nulos']} datos nulos detectados")
+
+with tab2:
+    st.header("Definición de Restricciones por Ciclo")
+    st.markdown("""
+    Aquí cruzamos la **Oferta** con la **Malla**.
+    * **Especialidad:** Se valida ciclo único.
+    * **Generales:** Se identifican TODAS las carreras afectadas para evitar choques en cualquiera de ellas.
+    """)
+    
+    if loaded:
+        if st.button("🔄 Ejecutar Análisis de Cruces"):
+            df_analisis = logic.detectar_restricciones_malla(data_context['oferta'], data_context['malla'])
+            
+            # Métricas
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Cursos Oferta", len(df_analisis))
+            c2.metric("Cursos Generales/Transversales", len(df_analisis[df_analisis['Tipo_Detectado'].str.contains('GENERAL')]))
+            c3.metric("Cursos Especialidad", len(df_analisis[df_analisis['Tipo_Detectado'] == 'ESPECIALIDAD']))
+            
+            st.divider()
+            
+            # Mostrar tabla interactiva
+            st.subheader("Detalle de Impacto por Curso")
+            
+            # Agregamos color para diferenciar visualmente
+            def color_tipo(val):
+                color = '#ffeba8' if 'GENERAL' in val else '#ccedff'
+                return f'background-color: {color}'
+
+            st.dataframe(
+                df_analisis[['Codigo', 'Nombre', 'Tipo_Detectado', 'Restriccion_Visual']].style.map(color_tipo, subset=['Tipo_Detectado']),
+                use_container_width=True,
+                height=500
+            )
+            
+            # Debugger: Ver data cruda de un curso
+            st.divider()
+            st.write("🕵️‍♂️ Inspector de Restricciones (Data cruda para el algoritmo)")
+            curso_select = st.selectbox("Selecciona un curso para ver sus restricciones detalladas:", df_analisis['Codigo'].unique())
+            datos_raw = df_analisis[df_analisis['Codigo'] == curso_select]['Data_Raw'].iloc[0]
+            st.json(datos_raw)
+
+    else:
+        st.warning("Carga los archivos primero.")
