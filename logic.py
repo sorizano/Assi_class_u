@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 
 class DataLoader:
     """Clase encargada de la carga y limpieza inicial de datos."""
@@ -7,11 +6,13 @@ class DataLoader:
     @staticmethod
     def clean_col_names(df):
         """Elimina espacios en blanco al inicio/final de los nombres de columnas."""
-        df.columns = df.columns.str.strip()
+        if df is not None:
+            df.columns = df.columns.str.strip()
         return df
 
     @staticmethod
     def load_file(uploaded_file):
+        """Carga inteligente de CSV/Excel."""
         if uploaded_file is None:
             return None
         try:
@@ -33,90 +34,93 @@ class DataLoader:
 
     @staticmethod
     def get_summary(df, name):
+        """Genera resumen estadístico para el frontend."""
         if not isinstance(df, pd.DataFrame):
-            return {"Error": "No se pudo procesar el archivo"}
+            return {"Error": str(df) if df else "No cargado"}
+        
         return {
             "Nombre": name,
             "Filas": df.shape[0],
-            "Columnas Clave": list(df.columns[:5])
+            "Columnas": df.shape[1],
+            "Cols_Preview": list(df.columns[:5]),
+            "Nulos": df.isnull().sum().sum()
         }
 
-def procesar_oferta_con_malla(df_oferta, df_malla):
+def detectar_restricciones_malla(df_oferta, df_malla):
     """
-    Cruza la oferta con la malla para determinar tipo de curso y ciclo.
+    Analiza qué cursos de la oferta afectan a qué carreras y ciclos.
+    Maneja la lógica de '1 curso -> Múltiples Carreras' (Generales).
     """
-    # 1. Estandarización de claves para el cruce (Join)
-    # Convertimos a string y quitamos espacios para evitar fallos por formato " 24UC..."
+    
+    # 1. Normalizar claves
     df_oferta['key_curso'] = df_oferta['Codigo De Curso'].astype(str).str.strip().str.upper()
     df_malla['key_curso'] = df_malla['COD ASIGNATURA'].astype(str).str.strip().str.upper()
     
-    # 2. Preparamos la malla para el cruce
-    # Seleccionamos solo columnas necesarias para no ensuciar la oferta
-    # Nota: Es posible que un curso esté repetido en malla (varios planes), 
-    # por ahora quitamos duplicados de código para traer la info base.
-    # EN EL FUTURO: Podríamos necesitar cruzar también por 'Plan' si los atributos cambian.
-    cols_malla = ['key_curso', 'TIPO 4', 'PROGRAMA', 'CICLO']
-    malla_unica = df_malla[cols_malla].drop_duplicates(subset=['key_curso'], keep='first')
+    # 2. Construir Diccionario de Impacto desde la Malla
+    # Agrupamos la malla por código de curso para ver en cuántos programas aparece
+    # Resultado esperado: { 'COD123': [{'Programa': 'Ingeniería', 'Ciclo': 1}, {'Programa': 'Derecho', 'Ciclo': 2}] }
     
-    # 3. Realizamos el cruce (Left Join: Mantenemos toda la oferta, traemos info de malla)
-    df_merge = pd.merge(
-        df_oferta, 
-        malla_unica, 
-        on='key_curso', 
-        how='left'
-    )
+    malla_relevant = df_malla[['key_curso', 'PROGRAMA', 'CICLO', 'TIPO 4']].drop_duplicates()
     
-    # 4. Lógica de Negocio: Clasificación de Cursos
-    def clasificar_curso(row):
-        # Si no cruzó con malla, no podemos saber (retornamos alerta)
-        if pd.isna(row['TIPO 4']):
-            return "NO ENCONTRADO EN MALLA"
+    impacto_curso = {}
+    
+    # Iteramos sobre los cursos únicos de la malla
+    for curso, grupo in malla_relevant.groupby('key_curso'):
+        tipo_curso = grupo['TIPO 4'].iloc[0] # Asumimos que el tipo (General/Esp) es constante para el código
         
-        tipo_4 = str(row['TIPO 4']).upper()
-        programa_malla = str(row['PROGRAMA']).upper()
+        lista_afectados = []
+        for _, row in grupo.iterrows():
+            lista_afectados.append({
+                'Programa': row['PROGRAMA'],
+                'Ciclo': row['CICLO']
+            })
+            
+        impacto_curso[curso] = {
+            'Tipo_Malla': tipo_curso,
+            'Afecta_A': lista_afectados,
+            'Es_General': 'GENERAL' in str(tipo_curso).upper() or 'TRANSVERSAL' in str(tipo_curso).upper()
+        }
         
-        # Lógica solicitada por el usuario
-        if tipo_4.startswith("GENERAL"):
-            return "GENERAL"
-        elif tipo_4 == programa_malla:
-            return "ESPECIALIDAD"
+    # 3. Aplicar esto a la Oferta
+    resultados = []
+    
+    for _, row in df_oferta.iterrows():
+        cod = row['key_curso']
+        nombre = row.get('Nombre De Curso', 'Sin Nombre')
+        carrera_oferta = row.get('Carrera', 'Desconocida')
+        
+        info_malla = impacto_curso.get(cod)
+        
+        if not info_malla:
+            # Caso: Curso nuevo o electivo no encontrado en malla base
+            resultados.append({
+                'Codigo': cod,
+                'Nombre': nombre,
+                'Tipo_Detectado': 'NO ENCONTRADO EN MALLA',
+                'Restriccion_Principal': f"Solo carrera oferta: {carrera_oferta}",
+                'Detalle_Impacto': []
+            })
         else:
-            return "OTRO / TRANSVERSAL"
-
-    df_merge['TIPO_CALCULADO'] = df_merge.apply(clasificar_curso, axis=1)
-    
-    # Limpieza final de columnas auxiliares
-    df_merge.drop(columns=['key_curso'], inplace=True)
-    
-    return df_merge
-
-def programar_horarios(data_context):
-    """
-    Motor principal.
-    """
-    print("Iniciando integración de datos...")
-    
-    df_oferta = data_context.get('oferta')
-    df_malla = data_context.get('malla')
-    
-    if df_oferta is None or df_malla is None:
-        return {"error": "Faltan archivos oferta o malla"}
-
-    # --- PASO 1: ENRIQUECER OFERTA CON DATOS DE MALLA ---
-    df_procesado = procesar_oferta_con_malla(df_oferta, df_malla)
-    
-    # Seleccionamos columnas relevantes para mostrar en el resumen
-    cols_mostrar = [
-        'Carrera', 'Codigo De Curso', 'Nombre De Curso', 
-        'CICLO', 'TIPO_CALCULADO', 'TIPO 4', 'Plan'
-    ]
-    
-    # Filtramos para mostrar solo las que existen (por si acaso cambian nombres)
-    cols_finales = [c for c in cols_mostrar if c in df_procesado.columns]
-    
-    return {
-        "status": "Procesado",
-        "message": "Cruce Oferta vs Malla completado.",
-        "data_preview": df_procesado[cols_finales].head(10).to_dict(orient='records'),
-        "full_data_stats": df_procesado['TIPO_CALCULADO'].value_counts().to_dict()
-    }
+            es_general = info_malla['Es_General']
+            afecta = info_malla['Afecta_A']
+            
+            # Lógica Crucial:
+            # Si es ESPECIALIDAD: Solo nos importa que no cruce con SU carrera y SU ciclo.
+            # Si es GENERAL: No debe cruzar con NINGUNA de las carreras/ciclos donde se dicta.
+            
+            if es_general:
+                desc = f"GENERAL: Impacta a {len(afecta)} programas"
+            else:
+                # Si es especialidad, filtramos para quedarnos con la carrera que dice la oferta
+                # (A veces un código se recicla, pero en especialidad suele ser único)
+                desc = f"ESPECIALIDAD: {afecta[0]['Programa']} - Ciclo {afecta[0]['Ciclo']}"
+            
+            resultados.append({
+                'Codigo': cod,
+                'Nombre': nombre,
+                'Tipo_Detectado': 'GENERAL/TRANSVERSAL' if es_general else 'ESPECIALIDAD',
+                'Restriccion_Visual': desc,
+                'Data_Raw': afecta # Esto servirá para el algoritmo matemático luego
+            })
+            
+    return pd.DataFrame(resultados)
