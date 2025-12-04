@@ -1,87 +1,49 @@
 import streamlit as st
 import pandas as pd
-import logic  # Importamos nuestro módulo de lógica
+import logic
 
-# Configuración de la página
-st.set_page_config(page_title="Generador de Horarios Universitarios", layout="wide")
+st.set_page_config(page_title="Generador de Horarios", layout="wide")
 
-st.title("🎓 Sistema de Programación de Horarios")
-st.markdown("""
-Sube los archivos requeridos para iniciar el análisis y la programación.
-""")
+st.title("🎓 Sistema de Programación - Módulo de Integración")
 
-# --- SECCIÓN LATERAL: CARGA DE ARCHIVOS ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📂 Carga de Datos")
-    
-    file_oferta = st.file_uploader("1. Oferta Académica (oferta)", type=['xlsx', 'csv'])
-    file_reqs = st.file_uploader("2. Requerimientos (requerimientos)", type=['xlsx', 'csv'])
-    file_aulas = st.file_uploader("3. Infraestructura (aulas)", type=['xlsx', 'csv'])
-    file_disp = st.file_uploader("4. Disponibilidad Docente (disponibilidad)", type=['xlsx', 'csv'])
-    file_malla = st.file_uploader("5. Plan de Estudios (malla)", type=['xlsx', 'csv'])
+    file_oferta = st.file_uploader("1. Oferta Académica", type=['xlsx', 'csv'])
+    file_malla = st.file_uploader("5. Plan de Estudios (Malla)", type=['xlsx', 'csv'])
+    # (Omito los otros inputs por brevedad, pero deberían estar si vas a cargar todo)
+    st.info("Para esta prueba, necesitamos obligatoriamente Oferta y Malla.")
 
-# --- LÓGICA DE PROCESAMIENTO ---
-
-# Diccionario para almacenar los dataframes
-data_context = {}
-
-# Verificamos si los archivos están cargados y los procesamos
-if file_oferta and file_reqs and file_aulas and file_disp and file_malla:
+# --- LÓGICA ---
+if file_oferta and file_malla:
+    data_context = {}
     
-    st.success("✅ Todos los archivos han sido cargados. Analizando estructura...")
-    
-    # Cargamos los datos usando el módulo logic.py
-    with st.spinner('Procesando archivos...'):
+    with st.spinner('Cargando archivos...'):
         data_context['oferta'] = logic.DataLoader.load_file(file_oferta)
-        data_context['requerimientos'] = logic.DataLoader.load_file(file_reqs)
-        data_context['aulas'] = logic.DataLoader.load_file(file_aulas)
-        data_context['disponibilidad'] = logic.DataLoader.load_file(file_disp)
         data_context['malla'] = logic.DataLoader.load_file(file_malla)
-
-    # --- PESTAÑAS DE VISUALIZACIÓN ---
-    tab1, tab2 = st.tabs(["📊 Resumen de Datos", "⚙️ Motor de Programación"])
-
-    with tab1:
-        st.subheader("Análisis de Archivos Cargados")
         
-        # Crear columnas para mostrar métricas
-        col1, col2, col3 = st.columns(3)
+    st.success(f"Archivos cargados: Oferta ({len(data_context['oferta'])}) y Malla ({len(data_context['malla'])})")
+    
+    if st.button("🔄 Ejecutar Cruce Oferta-Malla"):
+        resultado = logic.programar_horarios(data_context)
         
-        # Iterar sobre los datos cargados para mostrar tarjetas de resumen
-        for idx, (key, df) in enumerate(data_context.items()):
-            summary = logic.DataLoader.get_summary(df, key)
+        st.subheader("Resultados del Procesamiento")
+        
+        # 1. Métricas
+        if "full_data_stats" in resultado:
+            st.write("Distribución de cursos detectada:")
+            cols = st.columns(len(resultado["full_data_stats"]))
+            for idx, (label, count) in enumerate(resultado["full_data_stats"].items()):
+                cols[idx].metric(label, count)
+        
+        # 2. Tabla de Datos
+        if "data_preview" in resultado:
+            st.write("Vista previa de los datos enriquecidos (con Ciclo y Tipo):")
+            df_res = pd.DataFrame(resultado["data_preview"])
+            st.dataframe(df_res, use_container_width=True)
             
-            # Usar un contenedor expandible para cada archivo
-            with st.expander(f"Archivo: {key.upper()} ({summary.get('Filas', 0)} registros)", expanded=(idx==0)):
-                if "Error" in summary:
-                    st.error(summary["Error"])
-                else:
-                    c1, c2 = st.columns([1, 3])
-                    with c1:
-                        st.metric("Filas", summary["Filas"])
-                        st.metric("Columnas", summary["Columnas"])
-                    with c2:
-                        st.write("**Columnas detectadas:**")
-                        st.code(str(summary["Columnas Clave Detectadas"]))
-                        st.warning(f"Celdas vacías detectadas: {summary['Datos Nulos']}")
-                    
-                    st.write("Vista Previa:")
-                    st.dataframe(df.head(3), use_container_width=True)
-
-    with tab2:
-        st.subheader("Ejecución del Algoritmo")
-        st.info("Presiona el botón para iniciar la lógica de programación (aún vacía).")
-        
-        if st.button("🚀 Programar Horarios"):
-            # Llamada a la función modular en logic.py
-            resultado = logic.programar_horarios(data_context)
+            # Validación visual
+            st.caption("Verifica en la tabla de arriba que la columna 'TIPO_CALCULADO' coincida con tu lógica de negocio.")
             
-            st.json(resultado)
-            st.balloons()
-
 else:
-    st.info("👈 Por favor, carga los 5 archivos requeridos en la barra lateral para continuar.")
-
-# Footer simple
-st.markdown("---")
-st.caption("Sistema Modular de Horarios v1.0")
+    st.warning("Por favor carga al menos 'Oferta' y 'Malla' para probar la lógica.")
